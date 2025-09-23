@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  flask-webhook:
+    build: .
+    container_name: webhook   # clean, predictable name
+    ports:
+      - "5000:5000"                 # maps host:container port
+    environment:
+      IB_HOST: ibgateway
+      IBC_PORT: ${IBC_PORT}         # pulled from Coolify env vars
+      TRADING_ACCOUNT: ${TRADING_ACCOUNT}
