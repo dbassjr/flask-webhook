@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 # --- Environment variables set in Coolify ---
 IB_HOST = os.getenv("IB_HOST", "ibgateway")
-IB_PORT = int(os.getenv("IBC_PORT", "7497"))  # 7497=paper, 7496=live
+IB_PORT = int(os.getenv("IBC_PORT", "4002"))  # 4002=paper, 4001=live
 ACCOUNT_ID = os.getenv("TRADING_ACCOUNT")
 
 @app.route('/bgf', methods=['POST'])
