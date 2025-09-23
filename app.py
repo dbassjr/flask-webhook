@@ -54,3 +54,9 @@ def tradingview_webhook():
         if ib.isConnected():
             ib.disconnect()
             logging.info("Disconnected from IB Gateway")
+
+
+# --- Run Flask app ---
+if __name__ == '__main__':
+    # bind to 0.0.0.0 so Traefik can reach it
+    app.run(host="0.0.0.0", port=5000)
