@@ -101,15 +101,25 @@ def tradingview_webhook():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
+    return jsonify({"status": "ok", "message": "Webhook service is healthy"}), 200
+
+@app.route('/ib-status', methods=['GET'])
+def ib_status():
+    """Check IB Gateway connection status"""
     try:
-        # Test IB Gateway connection
-        ib = IB()
-        ib.connect(IB_HOST, IB_PORT, clientId=999, timeout=5)
-        ib.disconnect()
-        return jsonify({"status": "ok", "ib_gateway": "connected"}), 200
+        import socket
+        # Simple socket check instead of ib_insync
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result = sock.connect_ex((IB_HOST, IB_PORT))
+        sock.close()
+        
+        if result == 0:
+            return jsonify({"status": "ok", "ib_gateway": "connected"}), 200
+        else:
+            return jsonify({"status": "ok", "ib_gateway": "disconnected", "reason": "port_not_open"}), 200
     except Exception as e:
-        logger.warning(f"Health check - IB Gateway connection failed: {str(e)}")
-        return jsonify({"status": "ok", "ib_gateway": "disconnected", "warning": str(e)}), 200
+        return jsonify({"status": "ok", "ib_gateway": "disconnected", "error": str(e)}), 200
 
 @app.route('/test', methods=['GET'])
 def test():
