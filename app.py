@@ -60,3 +60,9 @@ def tradingview_webhook():
 if __name__ == '__main__':
     # bind to 0.0.0.0 so Traefik can reach it
     app.run(host="0.0.0.0", port=5000)
+
+
+# Simple endpoint for container health checks (no IB logic involved)
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
