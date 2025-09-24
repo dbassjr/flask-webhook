@@ -6,38 +6,17 @@ services:
     container_name: webhook
     restart: unless-stopped
     environment:
-      - IB_HOST=ibgateway       # use container name, not localhost
-      - IBC_PORT=${IBC_PORT}    # paper=4002
+      - IB_HOST=ibgateway              # resolves via shared network
+      - IBC_PORT=${IBC_PORT:-4002}     # default to paper trading
       - TRADING_ACCOUNT=${TRADING_ACCOUNT}
-    depends_on:
-      - ibgateway
-    ports:
-      - "127.0.0.1:5000:5000"   # bind only to localhost; Traefik handles outside
+    networks:
+      - ibgw-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  ibgateway:
-    image: ghcr.io/gnzsnz/ib-gateway:stable
-    container_name: ibgateway
-    restart: unless-stopped
-    environment:
-      - TWS_USERID=${TWS_USERID}
-      - TWS_PASSWORD=${TWS_PASSWORD}
-      - TRADING_MODE=${TRADING_MODE:-paper}
-      - VNC_SERVER_PASSWORD=${VNC_SERVER_PASSWORD}
-      - IBC_PORT=${IBC_PORT}
-    ports:
-      - "127.0.0.1:4002:4002"   # Paper API only; add others if needed
-    volumes:
-      - ibgateway-data:/root/Jts
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "4002"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-volumes:
-  ibgateway-data: {}
+networks:
+  ibgw-net:
+    external: true
