@@ -30,7 +30,9 @@ services:
       - TWS_PASSWORD=${TWS_PASSWORD}
       - TRADING_MODE=${TRADING_MODE:-paper}
       - VNC_SERVER_PASSWORD=${VNC_SERVER_PASSWORD}
-      - IBC_PORT=${IBC_PORT:-4002}
+      - TWS_ACCEPT_INCOMING=accept
+      - READ_ONLY_API=no
+      - BYPASS_WARNING=yes
     ports:
       - "127.0.0.1:4001:4001"
       - "127.0.0.1:4002:4002"
