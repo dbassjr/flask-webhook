@@ -1,7 +1,11 @@
 import os
 import logging
+import asyncio
 from flask import Flask, request, jsonify
-from ib_insync import *
+from ib_insync import IB, Stock, MarketOrder, util
+
+# Ensure an asyncio loop exists for ib_insync in Flask worker threads
+util.startLoop()
 
 # --- Setup Logging ---
 logging.basicConfig(
@@ -15,6 +19,11 @@ app = Flask(__name__)
 IB_HOST = os.getenv("IB_HOST", "ibgateway")
 IB_PORT = int(os.getenv("IBC_PORT", "4002"))  # 4002=paper, 4001=live
 ACCOUNT_ID = os.getenv("TRADING_ACCOUNT")
+
+# Simple endpoint for container health checks (no IB logic involved)
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
 
 @app.route('/bgf', methods=['POST'])
 def tradingview_webhook():
@@ -30,7 +39,6 @@ def tradingview_webhook():
         logging.warning("Invalid payload received")
         return jsonify({"status": "error", "message": "Missing required fields"}), 400
 
-    # Connect to IB Gateway
     ib = IB()
     try:
         ib.connect(IB_HOST, IB_PORT, clientId=1)
@@ -40,7 +48,7 @@ def tradingview_webhook():
             contract = Stock(symbol.upper(), 'SMART', 'USD')
             order = MarketOrder(action.upper(), int(qty))
             trade = ib.placeOrder(contract, order, account=ACCOUNT_ID)
-            ib.sleep(1)  # allow IB to process
+            ib.sleep(1)
             logging.info(f"Order placed: {action.upper()} {qty} {symbol.upper()} into {ACCOUNT_ID}")
             return jsonify({"status": "order sent", "details": data}), 200
         else:
@@ -55,14 +63,6 @@ def tradingview_webhook():
             ib.disconnect()
             logging.info("Disconnected from IB Gateway")
 
-
-# --- Run Flask app ---
 if __name__ == '__main__':
-    # bind to 0.0.0.0 so Traefik can reach it
-    app.run(host="0.0.0.0", port=5000)
-
-
-# Simple endpoint for container health checks (no IB logic involved)
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({"status": "ok"}), 200
+    # bind to 0.0.0.0 so Traefik can reach it; single-thread avoids per-request loop quirks
+    app.run(host="0.0.0.0", port=5000, threaded=False)
