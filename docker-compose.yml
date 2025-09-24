@@ -6,17 +6,52 @@ services:
     container_name: webhook
     restart: unless-stopped
     environment:
-      - IB_HOST=ibgateway              # resolves via shared network
-      - IBC_PORT=${IBC_PORT:-4002}     # default to paper trading
+      - IB_HOST=ibgateway
+      - IBC_PORT=${IBC_PORT:-4002}
       - TRADING_ACCOUNT=${TRADING_ACCOUNT}
+    ports:
+      - "5000:5000"  # Expose port for external access
     networks:
       - ibgw-net
+    depends_on:
+      ibgateway:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
+  ibgateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ibgateway
+    restart: unless-stopped
+    environment:
+      - TWS_USERID=${TWS_USERID}
+      - TWS_PASSWORD=${TWS_PASSWORD}
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - VNC_SERVER_PASSWORD=${VNC_SERVER_PASSWORD}
+      - IBC_PORT=${IBC_PORT:-4002}
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:4003:4003"
+      - "127.0.0.1:4004:4004"
+      - "127.0.0.1:5900:5900"  # VNC port
+    volumes:
+      - ibgateway-data:/root/Jts
+    networks:
+      - ibgw-net
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4002"]
+      interval: 60s  # Increased interval for IB Gateway startup
+      timeout: 10s
+      retries: 10    # More retries for slow startup
+      start_period: 120s  # Give IB Gateway time to start
+
 networks:
   ibgw-net:
-    external: true
+    driver: bridge
+
+volumes:
+  ibgateway-data:
