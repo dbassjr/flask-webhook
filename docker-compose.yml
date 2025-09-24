@@ -1,17 +1,15 @@
 version: '3.8'
 
 services:
-  flask-webhook:
+  webhook:
     build: .
-    container_name: webhook   # clean, predictable name
-    ports:
-      - "5000:5000"                 # maps host:container port
+    restart: unless-stopped
     environment:
       IB_HOST: ibgateway
-      IBC_PORT: ${IBC_PORT}         # pulled from Coolify env vars
+      IBC_PORT: ${IBC_PORT}
       TRADING_ACCOUNT: ${TRADING_ACCOUNT}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
