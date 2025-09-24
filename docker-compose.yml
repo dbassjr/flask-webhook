@@ -10,14 +10,13 @@ services:
       - IBC_PORT=${IBC_PORT:-4002}
       - TRADING_ACCOUNT=${TRADING_ACCOUNT}
     ports:
-      - "5000:5000"  # Expose port for external access
+      - "5000:5000"
     networks:
       - ibgw-net
     depends_on:
-      ibgateway:
-        condition: service_healthy
+      - ibgateway
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -37,17 +36,17 @@ services:
       - "127.0.0.1:4002:4002"
       - "127.0.0.1:4003:4003"
       - "127.0.0.1:4004:4004"
-      - "127.0.0.1:5900:5900"  # VNC port
+      - "127.0.0.1:5900:5900"
     volumes:
       - ibgateway-data:/root/Jts
     networks:
       - ibgw-net
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "4002"]
-      interval: 60s  # Increased interval for IB Gateway startup
-      timeout: 10s
-      retries: 10    # More retries for slow startup
-      start_period: 120s  # Give IB Gateway time to start
+      interval: 90s
+      timeout: 15s
+      retries: 15
+      start_period: 180s
 
 networks:
   ibgw-net:
