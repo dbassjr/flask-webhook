@@ -44,7 +44,7 @@ services:
     networks:
       - ibgw-net
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "4002"]
+      test: ["CMD", "sh", "-c", "nc -z localhost ${IBC_PORT:-4002}"]
       interval: 90s
       timeout: 15s
       retries: 15
