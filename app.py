@@ -134,7 +134,7 @@ def tradingview_webhook():
                         
                         # Create VIX futures contract - use the base symbol (VX for both VX and VXM)
                         contract = Future(
-                            symbol='VX',  # IB uses VX for all VIX variants
+                            symbol=ticker,  # Use VX, VXM, etc. as provided
                             lastTradeDateOrContractMonth=contract_month,
                             exchange='CFE',
                             currency='USD'
