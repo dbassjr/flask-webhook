@@ -106,17 +106,17 @@ def tradingview_webhook():
                     
                     # Parse contract from TradingView format
                     if symbol.upper().startswith('VX'):
-                        # Parse VIX futures symbol like "VXOct25" -> VX Oct 2025
-                        # Extract month and year from symbol
-                        match = re.match(r'VX([A-Za-z]{3})(\d{2})', symbol.upper())
-                        if not match:
-                            error_msg = f"Order {i+1}: Invalid VIX symbol format: {symbol}. Use format like VXOct25"
+                        # Parse hyphenated VIX futures symbol like "VX-Oct-25" or "VXM-Nov-25"
+                        parts = symbol.upper().split('-')
+                        if len(parts) != 3:
+                            error_msg = f"Order {i+1}: Invalid VIX symbol format: {symbol}. Use format like VX-Oct-25 or VXM-Oct-25"
                             logger.error(error_msg)
                             results.append({"order": i+1, "status": "error", "message": error_msg})
                             continue
                         
-                        month_name = match.group(1).upper()
-                        year_short = match.group(2)
+                        ticker = parts[0]  # VX, VXM, etc.
+                        month_name = parts[1].upper()
+                        year_short = parts[2]
                         
                         # Convert month name to number
                         month_map = {
@@ -132,9 +132,9 @@ def tradingview_webhook():
                         
                         contract_month = f"20{year_short}{month_map[month_name]}"
                         
-                        # Create VIX futures contract
+                        # Create VIX futures contract - use the base symbol (VX for both VX and VXM)
                         contract = Future(
-                            symbol='VX',
+                            symbol='VX',  # IB uses VX for all VIX variants
                             lastTradeDateOrContractMonth=contract_month,
                             exchange='CFE',
                             currency='USD'
