@@ -40,52 +40,250 @@ def connect_to_ib(retries=3, delay=2):
 
 @app.route('/bgf', methods=['POST'])
 def tradingview_webhook():
-    """Handle TradingView webhook for placing trades"""
+    """Handle TradingView webhook for placing trades with multiple order support"""
     try:
         data = request.json or {}
         logger.info(f"Received webhook data: {data}")
         
-        # Validate required fields
-        action = data.get("action")
-        symbol = data.get("symbol")
-        qty = data.get("qty")
+        # Expect orders array format only
+        orders = data.get("orders", [])
+        if not orders:
+            return jsonify({
+                "status": "error",
+                "message": "Missing 'orders' array. Format: {'orders': [{'action': 'SELL', 'symbol': 'VXOct25', 'qty': 2, 'order_type': 'MKT'}]}"
+            }), 400
         
-        if not action or not symbol or not qty:
-            error_msg = "Missing required fields: action, symbol, qty"
-            logger.error(error_msg)
-            return jsonify({"status": "error", "message": error_msg}), 400
-        
-        # Connect to IB Gateway
+        results = []
         ib = None
+        
         try:
             ib = connect_to_ib()
             
-            # Create contract and order
-            contract = Stock(symbol.upper(), 'SMART', 'USD')
-            ib.qualifyContracts(contract)  # Validate contract
+            for i, order_data in enumerate(orders):
+                try:
+                    # Extract fields
+                    action = order_data.get("action")
+                    symbol = order_data.get("symbol") 
+                    qty = order_data.get("qty")
+                    order_type = order_data.get("order_type", "MKT")  # Default to market
+                    price = order_data.get("price")
+                    aux_price = order_data.get("aux_price")
+                    target_position = order_data.get("position")
+                    
+                    # Validate order_type and default to MKT if invalid
+                    valid_order_types = ["MKT", "MARKET", "LMT", "LIMIT", "STP", "STOP", "STP_LMT", "STOP_LIMIT"]
+                    if order_type.upper() not in valid_order_types:
+                        logger.warning(f"Order {i+1}: Invalid order_type '{order_type}', defaulting to MKT")
+                        order_type = "MKT"
+                    
+                    # Handle conflicting instructions (position vs action/qty)
+                    if target_position is not None and (action or qty):
+                        logger.warning(f"Order {i+1}: Both 'position' and 'action/qty' provided. Using position-based logic, ignoring action/qty")
+                        action = None  # Clear action/qty to use position logic
+                        qty = None
+                    
+                    # Validate required fields
+                    if not symbol:
+                        error_msg = f"Order {i+1}: Missing required field: symbol"
+                        logger.error(error_msg)
+                        results.append({"order": i+1, "status": "error", "message": error_msg})
+                        continue
+                    
+                    if target_position is None and (not action or not qty):
+                        error_msg = f"Order {i+1}: Must provide either 'position' OR both 'action' and 'qty'"
+                        logger.error(error_msg)
+                        results.append({"order": i+1, "status": "error", "message": error_msg})
+                        continue
+                    
+                    # Parse contract from TradingView format
+                    if symbol.upper().startswith('VX'):
+                        # Parse VIX futures symbol like "VXOct25" -> VX Oct 2025
+                        # Extract month and year from symbol
+                        import re
+                        match = re.match(r'VX([A-Za-z]{3})(\d{2})', symbol.upper())
+                        if not match:
+                            error_msg = f"Order {i+1}: Invalid VIX symbol format: {symbol}. Use format like VXOct25"
+                            logger.error(error_msg)
+                            results.append({"order": i+1, "status": "error", "message": error_msg})
+                            continue
+                        
+                        month_name = match.group(1).upper()
+                        year_short = match.group(2)
+                        
+                        # Convert month name to number
+                        month_map = {
+                            'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04', 'MAY': '05', 'JUN': '06',
+                            'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+                        }
+                        
+                        if month_name not in month_map:
+                            error_msg = f"Order {i+1}: Invalid month in symbol: {month_name}"
+                            logger.error(error_msg)
+                            results.append({"order": i+1, "status": "error", "message": error_msg})
+                            continue
+                        
+                        contract_month = f"20{year_short}{month_map[month_name]}"
+                        
+                        # Create VIX futures contract
+                        contract = Future(
+                            symbol='VX',
+                            lastTradeDateOrContractMonth=contract_month,
+                            exchange='CFE',
+                            currency='USD'
+                        )
+                    else:
+                        # Regular stock
+                        contract = Stock(symbol.upper(), 'SMART', 'USD')
+                    
+                    # Qualify the contract
+                    qualified_contracts = ib.qualifyContracts(contract)
+                    if not qualified_contracts:
+                        error_msg = f"Order {i+1}: Could not find contract for symbol {symbol}"
+                        logger.error(error_msg)
+                        results.append({"order": i+1, "status": "error", "message": error_msg})
+                        continue
+                    
+                    qualified_contract = qualified_contracts[0]
+                    
+                    # Position-based logic: calculate required action/qty
+                    if target_position is not None:
+                        # Get current position for this contract
+                        current_positions = ib.positions()
+                        current_position = 0
+                        
+                        for pos in current_positions:
+                            if (pos.contract.symbol == qualified_contract.symbol and 
+                                pos.contract.lastTradeDateOrContractMonth == qualified_contract.lastTradeDateOrContractMonth):
+                                current_position = pos.position
+                                break
+                        
+                        # Calculate required trade
+                        position_difference = target_position - current_position
+                        
+                        if position_difference == 0:
+                            logger.info(f"Order {i+1}: Already at target position {target_position}, skipping")
+                            results.append({
+                                "order": i+1,
+                                "status": "skipped",
+                                "message": f"Already at target position {target_position}",
+                                "details": {
+                                    "symbol": symbol,
+                                    "current_position": current_position,
+                                    "target_position": target_position,
+                                    "difference": 0
+                                }
+                            })
+                            continue
+                        
+                        # Set action and quantity based on difference
+                        if position_difference > 0:
+                            action = "BUY"
+                            qty = abs(position_difference)
+                        else:
+                            action = "SELL" 
+                            qty = abs(position_difference)
+                        
+                        logger.info(f"Order {i+1}: Position-based calculation - Current: {current_position}, Target: {target_position}, Action: {action} {qty}")
+                    
+                    # Validate we have action and qty (either provided or calculated)
+                    if not action or not qty:
+                        error_msg = f"Order {i+1}: Could not determine action/qty"
+                        logger.error(error_msg)
+                        results.append({"order": i+1, "status": "error", "message": error_msg})
+                        continue
+                    
+                    # Create order based on order_type
+                    order_type = order_type.upper()
+                    quantity = int(qty)
+                    action = action.upper()
+                    
+                    if order_type in ["MKT", "MARKET"]:
+                        order = MarketOrder(action, quantity)
+                    
+                    elif order_type in ["LMT", "LIMIT"]:
+                        if not price:
+                            error_msg = f"Order {i+1}: Price required for limit order"
+                            logger.error(error_msg)
+                            results.append({"order": i+1, "status": "error", "message": error_msg})
+                            continue
+                        order = LimitOrder(action, quantity, float(price))
+                    
+                    elif order_type in ["STP", "STOP"]:
+                        stop_price = aux_price or price
+                        if not stop_price:
+                            error_msg = f"Order {i+1}: Stop price required for stop order"
+                            logger.error(error_msg)
+                            results.append({"order": i+1, "status": "error", "message": error_msg})
+                            continue
+                        order = StopOrder(action, quantity, float(stop_price))
+                    
+                    elif order_type in ["STP LMT", "STOP_LIMIT"]:
+                        if not price or not aux_price:
+                            error_msg = f"Order {i+1}: Both limit price and stop price required for stop-limit order"
+                            logger.error(error_msg)
+                            results.append({"order": i+1, "status": "error", "message": error_msg})
+                            continue
+                        order = StopLimitOrder(action, quantity, float(price), float(aux_price))
+                    
+                    else:
+                        error_msg = f"Order {i+1}: Unsupported order type: {order_type}. Use MKT, LMT, STP, or STP LMT"
+                        logger.error(error_msg)
+                        results.append({"order": i+1, "status": "error", "message": error_msg})
+                        continue
+                    
+                    # Place the order
+                    trade = ib.placeOrder(qualified_contract, order, account=ACCOUNT_ID)
+                    logger.info(f"Order {i+1} placed: {trade}")
+                    
+                    # Wait for order confirmation
+                    ib.sleep(1)
+                    
+                    # Get order status
+                    order_status = trade.orderStatus.status if trade.orderStatus else "Submitted"
+                    
+                    results.append({
+                        "order": i+1,
+                        "status": "success", 
+                        "message": "Order placed successfully",
+                        "details": {
+                            "symbol": symbol,
+                            "action": action,
+                            "quantity": quantity,
+                            "order_type": order_type,
+                            "price": price if price else None,
+                            "aux_price": aux_price if aux_price else None,
+                            "trade_id": trade.order.orderId if trade else None,
+                            "order_status": order_status,
+                            "contract_symbol": qualified_contract.symbol,
+                            "local_symbol": getattr(qualified_contract, 'localSymbol', symbol),
+                            "position_based": target_position is not None,
+                            "current_position": current_position if target_position is not None else "N/A",
+                            "target_position": target_position if target_position is not None else "N/A"
+                        }
+                    })
+                    
+                except Exception as e:
+                    error_msg = f"Order {i+1} error: {str(e)}"
+                    logger.error(error_msg)
+                    results.append({"order": i+1, "status": "error", "message": error_msg})
             
-            order = MarketOrder(action.upper(), int(qty))
+            # Prepare final response
+            successful_orders = len([r for r in results if r["status"] == "success"])
+            failed_orders = len(results) - successful_orders
             
-            # Place order
-            trade = ib.placeOrder(contract, order, account=ACCOUNT_ID)
-            logger.info(f"Order placed: {trade}")
-            
-            # Wait for order confirmation
-            ib.sleep(2)
+            overall_status = "success" if successful_orders > 0 else "error"
             
             return jsonify({
-                "status": "success",
-                "message": "Order placed successfully",
-                "details": {
-                    "action": action,
-                    "symbol": symbol,
-                    "quantity": qty,
-                    "trade_id": trade.order.orderId if trade else None
-                }
-            }), 200
+                "status": overall_status,
+                "message": f"Processed {len(results)} orders: {successful_orders} successful, {failed_orders} failed",
+                "total_orders": len(results),
+                "successful_orders": successful_orders,
+                "failed_orders": failed_orders,
+                "results": results
+            }), 200 if successful_orders > 0 else 400
             
         except Exception as e:
-            error_msg = f"Trading error: {str(e)}"
+            error_msg = f"Trading connection error: {str(e)}"
             logger.error(error_msg)
             return jsonify({"status": "error", "message": error_msg}), 500
             
@@ -97,6 +295,7 @@ def tradingview_webhook():
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}")
         return jsonify({"status": "error", "message": "Internal server error"}), 500
+        
 
 @app.route('/health', methods=['GET'])
 def health():
