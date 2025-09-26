@@ -240,7 +240,7 @@ def tradingview_webhook():
                         continue
                     
                     # Place the order
-                    trade = ib.placeOrder(qualified_contract, order, account=ACCOUNT_ID)
+                    trade = ib.placeOrder(qualified_contract, order)
                     logger.info(f"Order {i+1} placed: {trade}")
                     
                     # Wait for order confirmation
