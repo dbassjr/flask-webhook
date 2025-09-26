@@ -1,6 +1,8 @@
 import os
 import logging
 import time
+import re
+import asyncio
 from flask import Flask, request, jsonify
 from ib_insync import *
 
@@ -21,7 +23,14 @@ ACCOUNT_ID = os.getenv("TRADING_ACCOUNT")
 logger.info(f"Configuration: IB_HOST={IB_HOST}, IB_PORT={IB_PORT}, ACCOUNT={ACCOUNT_ID}")
 
 def connect_to_ib(retries=3, delay=2):
-    """Connect to IB Gateway with retry logic"""
+    """Connect to IB Gateway with retry logic and event loop handling"""
+    # Create event loop for this thread if it doesn't exist
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
     ib = IB()
     for attempt in range(retries):
         try:
@@ -99,7 +108,6 @@ def tradingview_webhook():
                     if symbol.upper().startswith('VX'):
                         # Parse VIX futures symbol like "VXOct25" -> VX Oct 2025
                         # Extract month and year from symbol
-                        import re
                         match = re.match(r'VX([A-Za-z]{3})(\d{2})', symbol.upper())
                         if not match:
                             error_msg = f"Order {i+1}: Invalid VIX symbol format: {symbol}. Use format like VXOct25"
@@ -217,7 +225,7 @@ def tradingview_webhook():
                             continue
                         order = StopOrder(action, quantity, float(stop_price))
                     
-                    elif order_type in ["STP LMT", "STOP_LIMIT"]:
+                    elif order_type in ["STP_LMT", "STOP_LIMIT"]:
                         if not price or not aux_price:
                             error_msg = f"Order {i+1}: Both limit price and stop price required for stop-limit order"
                             logger.error(error_msg)
@@ -226,7 +234,7 @@ def tradingview_webhook():
                         order = StopLimitOrder(action, quantity, float(price), float(aux_price))
                     
                     else:
-                        error_msg = f"Order {i+1}: Unsupported order type: {order_type}. Use MKT, LMT, STP, or STP LMT"
+                        error_msg = f"Order {i+1}: Unsupported order type: {order_type}. Use MKT, LMT, STP, or STP_LMT"
                         logger.error(error_msg)
                         results.append({"order": i+1, "status": "error", "message": error_msg})
                         continue
@@ -295,44 +303,91 @@ def tradingview_webhook():
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}")
         return jsonify({"status": "error", "message": "Internal server error"}), 500
-        
 
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({"status": "ok", "message": "Webhook service is healthy"}), 200
+    return jsonify({"status": "ok", "message": "VIX futures webhook service is healthy"}), 200
 
 @app.route('/ib-status', methods=['GET'])
 def ib_status():
-    """Check IB Gateway connection status"""
+    """Detailed IB Gateway connection status"""
     try:
         import socket
-        # Simple socket check instead of ib_insync
+        # Socket check
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3)
         result = sock.connect_ex((IB_HOST, IB_PORT))
         sock.close()
         
         if result == 0:
-            return jsonify({"status": "ok", "ib_gateway": "connected"}), 200
+            # Additional connection test with ib_insync
+            try:
+                # Handle event loop for threading
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                ib = IB()
+                ib.connect(IB_HOST, IB_PORT, clientId=999, timeout=5)
+                account_summary = ib.accountSummary() if ib.isConnected() else []
+                ib.disconnect()
+                
+                return jsonify({
+                    "status": "ok", 
+                    "ib_gateway": "connected",
+                    "port": IB_PORT,
+                    "accounts_available": len(account_summary) > 0,
+                    "timestamp": time.time()
+                }), 200
+            except Exception as e:
+                return jsonify({
+                    "status": "ok", 
+                    "ib_gateway": "port_open_but_api_failed",
+                    "error": str(e),
+                    "timestamp": time.time()
+                }), 200
         else:
-            return jsonify({"status": "ok", "ib_gateway": "disconnected", "reason": "port_not_open"}), 200
+            return jsonify({
+                "status": "ok", 
+                "ib_gateway": "disconnected", 
+                "reason": "port_not_open",
+                "port": IB_PORT,
+                "timestamp": time.time()
+            }), 200
     except Exception as e:
-        return jsonify({"status": "ok", "ib_gateway": "disconnected", "error": str(e)}), 200
+        return jsonify({
+            "status": "ok", 
+            "ib_gateway": "error", 
+            "error": str(e),
+            "timestamp": time.time()
+        }), 200
 
 @app.route('/test', methods=['GET'])
 def test():
     """Test endpoint for debugging"""
     return jsonify({
         "status": "ok",
+        "service": "VIX Futures Trading Webhook",
         "config": {
             "IB_HOST": IB_HOST,
             "IB_PORT": IB_PORT,
             "ACCOUNT_ID": ACCOUNT_ID[:4] + "***" if ACCOUNT_ID else None
         },
-        "message": "Webhook service is running"
+        "endpoints": {
+            "trading": "POST /bgf (with 'orders' array)",
+            "health": "GET /health",
+            "ib_status": "GET /ib-status"
+        },
+        "examples": {
+            "position_based": '{"orders": [{"symbol": "VXOct25", "position": -2, "order_type": "MKT"}]}',
+            "action_based": '{"orders": [{"action": "SELL", "symbol": "VXOct25", "qty": 2, "order_type": "MKT"}]}'
+        },
+        "message": "VIX futures webhook service is running"
     }), 200
 
 if __name__ == "__main__":
-    logger.info("Starting Flask webhook service...")
+    logger.info("Starting VIX futures trading webhook service...")
     app.run(host="0.0.0.0", port=5000, debug=False)
