@@ -1,7 +1,6 @@
 import os
 import logging
 import time
-import re
 import asyncio
 from flask import Flask, request, jsonify
 from ib_insync import *
@@ -59,8 +58,33 @@ def tradingview_webhook():
         if not orders:
             return jsonify({
                 "status": "error",
-                "message": "Missing 'orders' array. Format: {'orders': [{'action': 'SELL', 'symbol': 'VXOct25', 'qty': 2, 'order_type': 'MKT'}]}"
+                "message": "Missing 'orders' array. Format: {'orders': [{'action': 'SELL', 'symbol': 'VX-Oct-25', 'qty': 2, 'order_type': 'MKT'}]}"
             }), 400
+        
+        # Validate for duplicate contracts with conflicting order types
+        contract_orders = {}
+        for i, order_data in enumerate(orders):
+            symbol = order_data.get("symbol")
+            order_type = order_data.get("order_type", "MKT").upper()
+            
+            if symbol in contract_orders:
+                existing_order_type = contract_orders[symbol]
+                
+                # Allow multiple orders only if one is a stop/stop-limit order
+                allowed_combinations = [
+                    {"MKT", "STP"}, {"MKT", "STP_LMT"}, {"LMT", "STP"}, {"LMT", "STP_LMT"},
+                    {"MARKET", "STOP"}, {"MARKET", "STOP_LIMIT"}, {"LIMIT", "STOP"}, {"LIMIT", "STOP_LIMIT"}
+                ]
+                
+                current_combination = {existing_order_type, order_type}
+                
+                if current_combination not in allowed_combinations:
+                    return jsonify({
+                        "status": "error",
+                        "message": f"Multiple orders for {symbol} with incompatible order types: {existing_order_type} and {order_type}. Only market/limit + stop combinations are allowed."
+                    }), 400
+            
+            contract_orders[symbol] = order_type
         
         results = []
         ib = None
@@ -132,7 +156,7 @@ def tradingview_webhook():
                         
                         contract_month = f"20{year_short}{month_map[month_name]}"
                         
-                        # Create VIX futures contract - use the base symbol (VX for both VX and VXM)
+                        # Create VIX futures contract - use the actual ticker provided
                         contract = Future(
                             symbol=ticker,  # Use VX, VXM, etc. as provided
                             lastTradeDateOrContractMonth=contract_month,
@@ -165,11 +189,27 @@ def tradingview_webhook():
                                 current_position = pos.position
                                 break
                         
+                        # Get pending orders for this contract
+                        open_orders = ib.openOrders()
+                        pending_position_change = 0
+                        
+                        for trade in open_orders:
+                            if (trade.contract.symbol == qualified_contract.symbol and 
+                                trade.contract.lastTradeDateOrContractMonth == qualified_contract.lastTradeDateOrContractMonth):
+                                # Calculate position change from this pending order
+                                if trade.order.action == 'BUY':
+                                    pending_position_change += trade.order.totalQuantity
+                                elif trade.order.action == 'SELL':
+                                    pending_position_change -= trade.order.totalQuantity
+                        
+                        # Calculate effective current position (settled + pending)
+                        effective_current_position = current_position + pending_position_change
+                        
                         # Calculate required trade
-                        position_difference = target_position - current_position
+                        position_difference = target_position - effective_current_position
                         
                         if position_difference == 0:
-                            logger.info(f"Order {i+1}: Already at target position {target_position}, skipping")
+                            logger.info(f"Order {i+1}: Already at target position {target_position} (current: {current_position}, pending: {pending_position_change}), skipping")
                             results.append({
                                 "order": i+1,
                                 "status": "skipped",
@@ -177,6 +217,8 @@ def tradingview_webhook():
                                 "details": {
                                     "symbol": symbol,
                                     "current_position": current_position,
+                                    "pending_position_change": pending_position_change,
+                                    "effective_position": effective_current_position,
                                     "target_position": target_position,
                                     "difference": 0
                                 }
@@ -191,7 +233,7 @@ def tradingview_webhook():
                             action = "SELL" 
                             qty = abs(position_difference)
                         
-                        logger.info(f"Order {i+1}: Position-based calculation - Current: {current_position}, Target: {target_position}, Action: {action} {qty}")
+                        logger.info(f"Order {i+1}: Position calculation - Current: {current_position}, Pending: {pending_position_change}, Effective: {effective_current_position}, Target: {target_position}, Action: {action} {qty}")
                     
                     # Validate we have action and qty (either provided or calculated)
                     if not action or not qty:
@@ -239,7 +281,7 @@ def tradingview_webhook():
                         results.append({"order": i+1, "status": "error", "message": error_msg})
                         continue
                     
-                    # Place the order
+                    # Place the order (removed account parameter)
                     trade = ib.placeOrder(qualified_contract, order)
                     logger.info(f"Order {i+1} placed: {trade}")
                     
@@ -266,6 +308,8 @@ def tradingview_webhook():
                             "local_symbol": getattr(qualified_contract, 'localSymbol', symbol),
                             "position_based": target_position is not None,
                             "current_position": current_position if target_position is not None else "N/A",
+                            "pending_position_change": pending_position_change if target_position is not None else "N/A",
+                            "effective_position": effective_current_position if target_position is not None else "N/A",
                             "target_position": target_position if target_position is not None else "N/A"
                         }
                     })
@@ -382,8 +426,8 @@ def test():
             "ib_status": "GET /ib-status"
         },
         "examples": {
-            "position_based": '{"orders": [{"symbol": "VXOct25", "position": -2, "order_type": "MKT"}]}',
-            "action_based": '{"orders": [{"action": "SELL", "symbol": "VXOct25", "qty": 2, "order_type": "MKT"}]}'
+            "position_based": '{"orders": [{"symbol": "VX-Oct-25", "position": -2, "order_type": "MKT"}]}',
+            "action_based": '{"orders": [{"action": "SELL", "symbol": "VX-Oct-25", "qty": 2, "order_type": "MKT"}]}'
         },
         "message": "VIX futures webhook service is running"
     }), 200
